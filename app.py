@@ -3,78 +3,90 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 from fpdf import FPDF
 import re
-import io
 
 # --- Configuración de la página ---
-st.set_page_config(page_title="YouTube a PDF", page_icon="📄")
+st.set_page_config(page_title="YouTube a PDF Pro", page_icon="📄")
 
-# --- Funciones Auxiliares ---
+# --- Funciones ---
 
 def extract_video_id(url):
-    """Extrae la ID limpia del video."""
+    # Esta función saca el ID del video (ej: dQw4w9WgXcQ)
     video_id = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
     return video_id.group(1) if video_id else None
 
-def generate_pdf(text):
-    """Genera el objeto PDF en memoria."""
+def generate_pdf(text, video_title):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
     
-    # Título interno
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, 'Transcripción de Video', 0, 1, 'C')
-    pdf.ln(10)
+    # Título del PDF
+    pdf.set_font("Arial", 'B', 14)
+    # Limpiamos el título para evitar errores de caracteres raros
+    title_safe = video_title.encode('latin-1', 'replace').decode('latin-1')
+    pdf.multi_cell(0, 10, f"Transcripción: {title_safe}", 0, 'C')
+    pdf.ln(5)
     
     # Cuerpo del texto
     pdf.set_font("Arial", size=11)
-    
-    # FPDF básico necesita codificación latin-1 para tildes y ñ
-    # Reemplazamos caracteres no soportados para evitar errores
+    # Limpieza agresiva de caracteres para que no falle el PDF
     text_safe = text.encode('latin-1', 'replace').decode('latin-1')
-    pdf.multi_cell(0, 10, text_safe)
+    pdf.multi_cell(0, 8, text_safe)
     
-    # Retornar el contenido del PDF como bytes string
     return pdf.output(dest='S').encode('latin-1')
 
-# --- Interfaz de Usuario (Frontend) ---
+# --- Interfaz (Lo que ves en pantalla) ---
 
 st.title("📄 Descargador tipo Anthiago")
-st.markdown("Pega una URL de YouTube para descargar su transcripción en **PDF**.")
+st.markdown("Este descargador es **inteligente**: busca cualquier subtítulo y lo traduce a español si es necesario.")
 
-url = st.text_input("URL del video de YouTube:")
+url = st.text_input("Pega el link de YouTube aquí:")
 
-if url:
-    video_id = extract_video_id(url)
-    
-    if not video_id:
-        st.error("❌ La URL no parece válida.")
+if st.button("Buscar Transcripción"):
+    if not url:
+        st.warning("⚠️ Por favor, pega una URL primero.")
     else:
-        try:
-            with st.spinner('Extrayendo subtítulos...'):
-                # Busca subtítulos en español, si no hay, busca en inglés
-                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['es', 'en'])
-                
-                # Formatear a texto plano
-                formatter = TextFormatter()
-                text_formatted = formatter.format_transcript(transcript)
-                
-                # Mostrar una vista previa del texto en la web
-                with st.expander("Ver vista previa del texto"):
-                    st.text_area("Texto extraído:", text_formatted, height=200)
+        video_id = extract_video_id(url)
+        
+        if not video_id:
+            st.error("❌ Link no válido.")
+        else:
+            try:
+                with st.spinner('Buscando y traduciendo subtítulos...'):
+                    # 1. Obtener la lista de todos los subtítulos disponibles
+                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                    
+                    # 2. Intentar buscar uno en español, o tomar el primero que haya (inglés, generado auto, etc)
+                    try:
+                        # Intenta buscar manual en español o inglés
+                        transcript = transcript_list.find_transcript(['es', 'en'])
+                    except:
+                        # Si falla, agarra CUALQUIERA (incluso los automáticos)
+                        transcript = transcript_list.find_generated_transcript(['en', 'es'])
+                    
+                    # 3. TRADUCIR A ESPAÑOL (La magia de Anthiago)
+                    # Esto fuerza a que, sea lo que sea, nos lo de en español
+                    translated_transcript = transcript.translate('es')
+                    
+                    # 4. Convertir a texto plano
+                    formatter = TextFormatter()
+                    text_formatted = formatter.format_transcript(translated_transcript.fetch())
 
-                # Generar el PDF en memoria
-                pdf_bytes = generate_pdf(text_formatted)
-                
-                # Botón de descarga
-                st.download_button(
-                    label="⬇️ Descargar PDF",
-                    data=pdf_bytes,
-                    file_name=f"transcripcion_{video_id}.pdf",
-                    mime="application/pdf"
-                )
-                
-        except Exception as e:
-            st.error("⚠️ No se pudieron extraer los subtítulos.")
-            st.info("Posibles causas: El video no tiene subtítulos/CC activados o es un video privado.")
-            # st.exception(e) # Descomentar para ver el error técnico exacto
+                    # Mostrar texto en pantalla
+                    st.success("✅ ¡Transcripción encontrada!")
+                    with st.expander("👀 Leer texto aquí"):
+                        st.write(text_formatted)
+
+                    # 5. Botón para descargar PDF
+                    pdf_bytes = generate_pdf(text_formatted, video_id)
+                    
+                    st.download_button(
+                        label="⬇️ Descargar PDF ahora",
+                        data=pdf_bytes,
+                        file_name=f"transcripcion_{video_id}.pdf",
+                        mime="application/pdf"
+                    )
+
+            except Exception as e:
+                # Si entra aquí, es que YouTube bloqueó la conexión o el video no tiene audio texto.
+                st.error("❌ Error: No se pudo extraer.")
+                st.info("Posibles causas:\n1. El video es muy nuevo o privado.\n2. YouTube bloqueó temporalmente tu conexión (espera un rato).")
